@@ -9,7 +9,7 @@ on:
 
 jobs:
   lint-commits:
-    name: Validate PR Commit Format
+    name: Validate PR Commit Format & Coherence
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR commits
@@ -18,7 +18,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Validate Commit Formats
+      - name: Validate Commit Formats and SemVer Coherence
         run: |
           set -uo pipefail
 
@@ -50,15 +50,59 @@ jobs:
             SUBJECT=$(git log -1 --format=%s "$SHA")
             SHORT_SHA=$(git rev-parse --short "$SHA")
 
-            # Check if it matches valid versioning commit pattern
+            # 1. Check if it follows the general version commit format
             if [[ "$SUBJECT" =~ $VALID_REGEX ]]; then
-              echo "✅ [VALID VERSION TAG] $SHORT_SHA - $SUBJECT"
-              VERSIONED=$((VERSIONED + 1))
+              # Extract keyword and bracket version
+              KW=$(echo "$SUBJECT" | grep -ioP '\b(high|low|parch|patch)(?=\s*\[[0-9]+\.[0-9]+\.[0-9]+\])' | head -n 1 | tr '[:upper:]' '[:lower:]' || true)
+              TAG_VER=$(echo "$SUBJECT" | grep -oP '\[\K[0-9]+\.[0-9]+\.[0-9]+(?=\])' | head -n 1 || true)
+
+              # 2. Strict semantic coherence check
+              COHERENT=true
+              COHERENCE_MSG=""
+
+              case "$KW" in
+                high)
+                  if [[ "$TAG_VER" != "1.0.0" ]]; then
+                    COHERENT=false
+                    COHERENCE_MSG="Inconsistencia semántica: Usaste 'high' (Major) pero colocaste '[$TAG_VER]'. La convención exige 'high [1.0.0]'."
+                  fi
+                  ;;
+                low)
+                  if [[ "$TAG_VER" != "0.1.0" ]]; then
+                    COHERENT=false
+                    COHERENCE_MSG="Inconsistencia semántica: Usaste 'low' (Minor) pero colocaste '[$TAG_VER]'. La convención exige 'low [0.1.0]'."
+                  fi
+                  ;;
+                parch|patch)
+                  if [[ "$TAG_VER" != "0.0.1" ]]; then
+                    COHERENT=false
+                    COHERENCE_MSG="Inconsistencia semántica: Usaste '$KW' (Patch) pero colocaste '[$TAG_VER]'. La convención exige 'parch [0.0.1]'."
+                  fi
+                  ;;
+              esac
+
+              if [ "$COHERENT" = true ]; then
+                echo "✅ [VALID & COHERENT] $SHORT_SHA - $SUBJECT"
+                VERSIONED=$((VERSIONED + 1))
+              else
+                echo "❌ [CONTRADICTION ERROR] $SHORT_SHA - $SUBJECT"
+                echo "   -> $COHERENCE_MSG"
+                echo "   💡 Cómo corregir:"
+                echo "      git commit --amend -m \"tipo: <palabra_clave_correcta> [X.Y.Z_correcto] descripcion\""
+                echo "      git push --force-with-lease"
+                echo "::error file=git,title=Commit Inconsistency::$SHORT_SHA: $COHERENCE_MSG"
+                ERRORS=$((ERRORS + 1))
+              fi
+
             elif echo "$SUBJECT" | grep -iqE "$SUSPICIOUS_REGEX"; then
               echo "❌ [MALFORMED VERSION TAG] $SHORT_SHA - $SUBJECT"
-              echo "   Error: Commit attempts to use versioning keywords or brackets but does not follow required format:"
-              echo "   Expected: tipo(modulo): <high|low|parch> [X.Y.Z] descripcion"
-              echo "   Ejemplo : feat(M01): low [0.1.0] descripcion del cambio"
+              echo "   Error: El commit intenta declarar versión pero tiene sintaxis defectuosa."
+              echo "   Formato esperado: tipo(modulo): <high|low|parch> [X.Y.Z] descripcion"
+              echo "   Ejemplos válidos:"
+              echo "     - feat: high [1.0.0] breaking change"
+              echo "     - feat: low [0.1.0] nueva caracteristica"
+              echo "     - fix: parch [0.0.1] correccion de error"
+              echo "::error file=git,title=Malformed Commit Syntax::$SHORT_SHA: Sintaxis de commit de versión inválida."
               ERRORS=$((ERRORS + 1))
             else
               echo "ℹ️  [STANDARD COMMIT]    $SHORT_SHA - $SUBJECT"
@@ -69,11 +113,11 @@ jobs:
           echo "============================================="
           echo "Summary: $TOTAL total commit(s) evaluated."
           echo "  - Version-tagged commits: $VERSIONED"
-          echo "  - Syntax errors found   : $ERRORS"
+          echo "  - Syntax / Coherence errors: $ERRORS"
           echo "============================================="
 
           if [ "$ERRORS" -gt 0 ]; then
-            echo "::error::PR contains $ERRORS commit(s) with malformed version tags. Please rewrite commits using 'git rebase -i' before merging."
+            echo "::error::El Pull Request contiene $ERRORS commit(s) con errores o contradicciones de versión. Corrige los commits antes de fusionar a main."
             exit 1
           fi
 
