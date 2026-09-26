@@ -1,0 +1,80 @@
+name: Lint PR Commits
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+      - master
+
+jobs:
+  lint-commits:
+    name: Validate PR Commit Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR commits
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Validate Commit Formats
+        run: |
+          set -uo pipefail
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          echo "============================================="
+          echo "Linting Commits in Pull Request"
+          echo "Base SHA : $BASE_SHA"
+          echo "Head SHA : $HEAD_SHA"
+          echo "============================================="
+
+          COMMITS=$(git rev-list --reverse "${BASE_SHA}..${HEAD_SHA}")
+
+          if [[ -z "${COMMITS:-}" ]]; then
+            echo "No commits found to lint."
+            exit 0
+          fi
+
+          VALID_REGEX="^[a-zA-Z0-9_-]+(\([a-zA-Z0-9_.-]+\))?:[[:space:]]+(high|low|parch|patch)[[:space:]]+\[[0-9]+\.[0-9]+\.[0-9]+\][[:space:]]+.+$"
+          SUSPICIOUS_REGEX="\b(high|low|parch|patch)\b|\[[0-9]+(\.[0-9]+)*\]"
+
+          ERRORS=0
+          TOTAL=0
+          VERSIONED=0
+
+          for SHA in $COMMITS; do
+            TOTAL=$((TOTAL + 1))
+            SUBJECT=$(git log -1 --format=%s "$SHA")
+            SHORT_SHA=$(git rev-parse --short "$SHA")
+
+            # Check if it matches valid versioning commit pattern
+            if [[ "$SUBJECT" =~ $VALID_REGEX ]]; then
+              echo "✅ [VALID VERSION TAG] $SHORT_SHA - $SUBJECT"
+              VERSIONED=$((VERSIONED + 1))
+            elif echo "$SUBJECT" | grep -iqE "$SUSPICIOUS_REGEX"; then
+              echo "❌ [MALFORMED VERSION TAG] $SHORT_SHA - $SUBJECT"
+              echo "   Error: Commit attempts to use versioning keywords or brackets but does not follow required format:"
+              echo "   Expected: tipo(modulo): <high|low|parch> [X.Y.Z] descripcion"
+              echo "   Ejemplo : feat(M01): low [0.1.0] descripcion del cambio"
+              ERRORS=$((ERRORS + 1))
+            else
+              echo "ℹ️  [STANDARD COMMIT]    $SHORT_SHA - $SUBJECT"
+            fi
+          done
+
+          echo ""
+          echo "============================================="
+          echo "Summary: $TOTAL total commit(s) evaluated."
+          echo "  - Version-tagged commits: $VERSIONED"
+          echo "  - Syntax errors found   : $ERRORS"
+          echo "============================================="
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::PR contains $ERRORS commit(s) with malformed version tags. Please rewrite commits using 'git rebase -i' before merging."
+            exit 1
+          fi
+
+          echo "All PR commits passed validation successfully."

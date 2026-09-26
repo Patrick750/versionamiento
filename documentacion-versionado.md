@@ -1,99 +1,141 @@
-# Documentación — Automatización de versionado por commits
+# Documentación — Automatización de Versionado por Commits
 
 ## 1. Objetivo
 
-Eliminar la actualización manual de versión del proyecto. Los desarrolladores solo deben escribir una "bandera" de versión dentro de su mensaje de commit; un bot de GitHub Actions se encarga de interpretar esa bandera, calcular la versión real del proyecto, dejar constancia en un commit propio y crear el tag de Git correspondiente.
+Eliminar la actualización manual del número de versión del proyecto y la creación manual de tags de Git. Los desarrolladores únicamente deben incluir una palabra clave de versión dentro del mensaje de su commit; un flujo automatizado de GitHub Actions interpreta dicha palabra, calcula el incremento semántico correspondiente (`MAJOR`, `MINOR` o `PATCH`), actualiza el archivo `VERSION`, deja constancia en un commit específico de versión y publica el tag de Git anotado en orden cronológico exacto.
 
-## 2. Formato de commit requerido
-
+```mermaid
+flowchart LR
+    A["Commit con palabra clave\n(high / low / parch)"] --> B["PR a main\n(Validado por pr-lint)"]
+    B --> C["Merge Commit (--no-ff)\nen rama main"]
+    C --> D["GitHub Action\n(version-on-merge)"]
+    D --> E["Calcula nuevo SemVer\ny actualiza VERSION"]
+    E --> F["Commit chore(version-bump)\ny Git Tag vX.Y.Z"]
 ```
+
+---
+
+## 2. Formato de Commit Requerido
+
+Todo commit que pretenda disparar un cambio de versión debe seguir la siguiente estructura:
+
+```text
 tipo(modulo): <palabra_clave> [X.Y.Z] descripcion del cambio
 ```
 
-Ejemplos reales:
+### Ejemplos Reales:
+```text
+feat(auth): high [1.0.0] cambio de arquitectura en autenticacion oauth2
+feat(usuarios): low [0.1.0] agregar validacion de formulario de registro
+fix(perfil): parch [0.0.1] corregir typo en mensaje de error al subir avatar
 ```
-feat(M01): high [1.0.0] cambio de arquitectura de auth
-feat(M01): low [0.1.0] agregar validacion de formulario de login
-fix(M01): parch [0.0.1] corregir typo en mensaje de error
-```
 
-- **tipo**: clase de cambio (`feat`, `fix`, `refactor`, etc.), igual que en Conventional Commits.
-- **modulo**: parte del sistema afectada.
-- **palabra_clave**: `high`, `low` o `parch` — indica explícitamente qué segmento de versión se debe subir.
-- **[X.Y.Z]**: acompaña a la palabra clave, pero es solo documental/ilustrativo dentro del commit — el bot no calcula nada a partir de este número.
-- **descripcion**: el detalle normal del commit.
+### Desglose de Campos:
+- **`tipo`**: Clase de cambio bajo Conventional Commits (`feat`, `fix`, `refactor`, `perf`, `docs`, `chore`, etc.).
+- **`modulo`**: (Opcional) Identificador del módulo o área del sistema afectada (ej. `(auth)`, `(M01)`).
+- **`palabra_clave`**: `high`, `low` o `parch` (también se admite `patch` como alias): determina inequívocamente qué segmento de la versión se incrementará.
+- **`[X.Y.Z]`**: Segmento numérico que acompaña a la palabra clave con propósitos documentales y de legibilidad para los revisores del PR. **Importante:** El bot de versionado no utiliza este número para el cálculo; la versión real se incrementa matemáticamente a partir del archivo central `VERSION`.
+- **`descripcion`**: Detalle sucinto y descriptivo del cambio implementado.
 
-## 3. Qué significa cada palabra clave
+---
 
-A diferencia del esquema anterior (que inferí la, del dígito del tag), ahora la palabra clave lo dice de forma explícita, sin ambigüedad:
+## 3. Palabras Clave y Semántica de Versionado
 
-| Palabra clave | Significado | Efecto en la versión del proyecto |
-|---|---|---|
-| `high [X.Y.Z]` | Cambio grande / breaking change | Sube el **major**. Ej: `3.13.0` → `4.0.0` |
-| `low [X.Y.Z]` | Cambio normal (feature, mejora) | Sube el **minor**. Ej: `3.12.4` → `3.13.0` |
-| `parch [X.Y.Z]` | Corrección pequeña / bugfix menor | Sube el **patch**. Ej: `3.13.0` → `3.13.1` |
+A diferencia de esquemas ambiguos que intentan inferir la versión directamente del texto del tag, este sistema utiliza palabras clave explícitas:
 
-Este esquema agrega un tercer nivel (patch) que el esquema anterior no distinguía por separado.
+| Palabra clave | Significado | Efecto en la versión del proyecto | Ejemplo de Transición |
+|---|---|---|---|
+| `high [X.Y.Z]` | Cambio mayor / Breaking change | Incrementa el **MAJOR** y resetea `MINOR` y `PATCH` a `0`. | `3.13.4` → `4.0.0` |
+| `low [X.Y.Z]` | Funcionalidad / Feature o mejora | Incrementa el **MINOR** y resetea `PATCH` a `0`. | `3.13.4` → `3.14.0` |
+| `parch [X.Y.Z]` | Corrección / Bugfix o parche menor | Incrementa el **PATCH** manteniendo `MAJOR` y `MINOR`. | `3.13.4` → `3.13.5` |
 
-## 4. Cómo se extrae la palabra clave del mensaje de commit
+> [!TIP]
+> Por robustez operativa, la expresión regular del workflow acepta tanto `parch` como `patch` de forma indiferente (case-insensitive).
 
-Se usa esta expresión regular sobre el mensaje del commit:
+---
+
+## 4. Extracción de la Palabra Clave mediante Expresión Regular
+
+El workflow analiza el asunto (`subject`) de cada commit utilizando la siguiente expresión regular POSIX/PCRE:
 
 ```bash
-KEYWORD=$(echo "$MSG" | grep -oP '\b(high|low|parch)(?=\s*\[[0-9]+\.[0-9]+\.[0-9]+\])' || true)
+KEYWORD=$(echo "$MSG" | grep -ioP '\b(high|low|parch|patch)(?=\s*\[[0-9]+\.[0-9]+\.[0-9]+\])' | head -n 1 | tr '[:upper:]' '[:lower:]' || true)
 ```
 
-Explicación pieza por pieza:
-- `\b` — asegura que se detecte la palabra completa (evita coincidencias parciales dentro de otra palabra).
-- `(high|low|parch)` — captura cualquiera de las tres palabras clave válidas.
-- `(?=\s*\[[0-9]+\.[0-9]+\.[0-9]+\])` — verifica (sin incluirlo en el resultado) que justo después venga un espacio opcional y un patrón `[X.Y.Z]`, para confirmar que la palabra realmente está acompañando a un tag de versión y no es una coincidencia casual en la descripción del commit.
-- `|| true` — evita que el script falle si el commit no trae ninguna palabra clave; en ese caso simplemente se omite ese commit.
+### Explicación Técnica:
+- `\b`: Límite de palabra para prevenir coincidencias parciales dentro de otras palabras (ej. `highlight` no disparará `high`).
+- `(high|low|parch|patch)`: Captura cualquiera de las palabras clave autorizadas.
+- `(?=\s*\[[0-9]+\.[0-9]+\.[0-9]+\])`: *Lookahead positivo* que valida que inmediatamente después exista un espacio opcional seguido del patrón numérico `[X.Y.Z]`. Esto garantiza que la palabra esté asociada formalmente a una declaración de versión y no sea una coincidencia casual dentro de la descripción del commit.
+- `head -n 1`: Toma la primera coincidencia en caso de repetición.
+- `tr '[:upper:]' '[:lower:]'`: Normaliza a minúsculas para soportar variantes como `HIGH` o `Low`.
+- `|| true`: Previene fallos del script si el commit no contiene ninguna palabra clave; en tal caso la variable `$KEYWORD` queda vacía y el commit se omite de forma segura.
 
-## 5. Archivo de versión
+---
 
-- Vive en la raíz del repo como `VERSION`.
-- Formato: `MAJOR.MINOR.PATCH` (3 segmentos, ej. `3.12.4`).
-- Si no existe cuando corre el workflow por primera vez, se crea automáticamente en `0.0.0`.
+## 5. Archivo Central de Versión (`VERSION`)
 
-## 6. Cuándo se dispara la automatización
+- Se ubica en la raíz del repositorio con el nombre [`VERSION`](file:///home/patrickortiz/PycharmProjects/Versionamiento/VERSION).
+- Formato estricto: `MAJOR.MINOR.PATCH` (ej. `0.0.0`, `1.2.3`).
+- Si el archivo no existe al momento de ejecutarse la acción por primera vez, el workflow lo inicializa automáticamente en `0.0.0`.
+- El flujo valida la integridad del contenido antes de operar; si detecta datos corruptos o texto arbitrario, la ejecución se detiene con un mensaje de error explicativo para evitar inconsistencias en el historial.
 
-- **Solo** con `push` a la rama `main`. Los commits en ramas de feature no disparan nada — el sistema únicamente reacciona cuando el trabajo llega a `main`, típicamente por la fusión de un Pull Request.
-- El job se auto-excluye si el commit que lo disparó fue generado por el propio bot (para no entrar en loop infinito consigo mismo).
+---
 
-## 7. Por qué importa cómo se fusiona el Pull Request
+## 6. Disparador del Flujo y Prevención de Ciclos Infinitos
 
-GitHub ofrece tres formas de fusionar un PR:
+- **Evento**: Se activa exclusivamente con eventos `push` hacia las ramas protegidas `main` y `master`.
+- **Ramas secundarias**: Los commits en ramas de desarrollo o feature (`feature/*`, `fix/*`) no disparan versionado; el sistema únicamente reacciona cuando el trabajo se incorpora formalmente a la rama principal.
+- **Protección contra loops infinitos**:
+  - En la condición del job: `if: "!contains(github.event.head_commit.message, 'chore(version-bump)')"`.
+  - En el script interno: se omite cualquier commit cuyo mensaje contenga la firma `chore(version-bump)`.
+  - El token estándar de GitHub Actions (`GITHUB_TOKEN`) no dispara ejecuciones recursivas por diseño de la plataforma.
 
-- **Create a merge commit** (`--no-ff`): conserva todos los commits originales de la rama dentro del historial de `main`, más un commit de merge adicional. ✅ Compatible con esta automatización.
-- **Rebase and merge**: también conserva todos los commits individuales, reescritos sobre `main`. ✅ Compatible.
-- **Squash and merge**: colapsa todos los commits de la rama en **uno solo**. ❌ Incompatible — si se usa esta opción, el bot solo vería un commit y no podría procesar los 13 commits individuales con sus 13 tags.
+---
 
-**Regla para el equipo:** nunca usar "Squash and merge" en este repositorio si se quiere aprovechar el versionado automático por commit.
+## 7. Estrategia de Fusión en Pull Requests (Merge vs Squash)
 
-## 8. Flujo completo, paso a paso
+La preservación de los commits individuales en el historial de `main` es un requisito indispensable:
 
-1. El desarrollador crea su rama de feature desde `main`.
-2. Hace sus commits normales, seleccionando su tag de versión `[X.Y.Z]` en los que correspondan.
-3. Abre el Pull Request hacia `main`. El equipo revisa, se pueden agregar más commits.
-4. Al aprobar, se fusiona eligiendo **"Create a merge commit"** (nunca squash).
-5. GitHub genera un evento `push` sobre `main`, con las referencias `before` (estado anterior) y `after` (estado nuevo, el merge commit).
-6. El workflow calcula el rango exacto de commits nuevos con `git log --reverse before..after`, obteniendo los commits en el orden real en que se programaron.
-7. Recorre cada commit del rango:
-   - Si no tiene tag `[X.Y.Z]`, lo omite (incluye el propio commit de merge que genera GitHub, que normalmente no trae corchetes).
-   - Si tiene tag, calcula el nuevo número de versión según la regla de major/minor, actualiza el archivo `VERSION`, crea un commit de versión (`chore(version-bump): ...`) y un tag anotado (`vX.Y.Z`) apuntando a ese commit.
-8. Al terminar de recorrer todos los commits, hace un único `push` de todos los commits de versión generados, y un `push --tags` para subir todos los tags creados.
+- **Create a merge commit (`--no-ff`)**: ✅ **Método estándar y recomendado.** Mantiene cada commit individual intacto dentro del historial más el commit de merge de GitHub.
+- **Rebase and merge**: ✅ **Compatible.** Mantiene los commits individuales reescribiéndolos sobre la base de `main`.
+- **Squash and merge**: ❌ **INCOMPATIBLE Y NO PERMITIDO.** Esta opción comprime todos los commits de la rama en un único commit genérico, impidiendo que el bot procese los commits individuales con sus respectivas palabras clave y tags.
 
-**Resultado esperado con 13 commits en el merge:** si, por ejemplo, 8 traen tag `[0.x.x]` y 5 traen `[1.x.x]`, el historial de `main` termina con hasta 13 commits de versión nuevos (uno por cada commit taggeado), cada uno con su tag correspondiente, aplicados en el orden correcto — no un solo salto acumulado al final.
+---
 
-## 9. Casos borde contemplados
+## 8. Flujo Operativo Paso a Paso
 
-- **Primer push a una rama nueva** (`before` es un hash de puros ceros): se maneja tomando todos los commits desde el inicio del historial hasta `after`, en vez de intentar un rango inválido.
-- **Commit sin tag**: se omite sin generar ningún bump ni error.
-- **Formato de `VERSION` inválido**: el job debe fallar explícitamente con un mensaje claro, en vez de continuar con datos corruptos.
-- **El propio commit de merge de GitHub** (mensaje tipo `Merge pull request #12 from...`): normalmente no trae corchetes, así que se omite igual que cualquier commit sin tag.
+1. El desarrollador crea su rama de trabajo (`feature/xyz`) desde `main`.
+2. Realiza sus commits normales, incluyendo la palabra clave (`high`, `low` o `parch`) y el tag referencial `[X.Y.Z]` en aquellos commits donde corresponda versionar.
+3. Abre un Pull Request hacia `main`. El workflow `.github/workflows/pr-lint.yml` analiza los commits y valida la sintaxis.
+4. Tras la revisión y aprobación, el PR se fusiona seleccionando **"Create a merge commit"**.
+5. GitHub emite el evento `push` en `main`, proveyendo las referencias `before` (estado previo) y `after` (nuevo estado).
+6. El workflow `.github/workflows/version-on-merge.yml` determina el rango exacto de commits mediante `git rev-list --reverse before..after`.
+7. Itera commit por commit en orden cronológico:
+   - Si no posee palabra clave válida, lo omite silenciosamente (incluyendo el commit de merge generado por GitHub).
+   - Si contiene una palabra clave válida, lee `VERSION`, calcula la nueva versión matemática según el nivel (`high`, `low`, `parch`), escribe el archivo `VERSION`, genera un commit dedicado:
+     ```text
+     chore(version-bump): <NUEVA_VERSION> (origen: <sha corto> - <mensaje original>)
+     ```
+     y crea un tag anotado:
+     ```text
+     v<NUEVA_VERSION>
+     ```
+8. Al culminar el análisis de todos los commits del rango, realiza un único `push` atómico de los commits de versión y todos los tags creados hacia el repositorio remoto.
 
-## 10. Pendiente / mejoras futuras a considerar
+---
 
-- Un check en el propio Pull Request que valide, antes de fusionar, que todos los commits de la rama cumplen el formato esperado — para evitar descubrir un commit mal escrito después de fusionar.
-- Generación automática de GitHub Releases con notas de cambio, usando los tags creados como base (similar a lo que hace un workflow de release tradicional, pero disparado por estos mismos tags).
-- Decidir si en algún momento se prefiere colapsar los bumps en un solo commit final por merge, en vez de uno por cada commit taggeado (actualmente se optó por mantener el commit por commit para trazabilidad completa).
+## 9. Manejo de Casos Borde y Resiliencia
+
+- **Primer push a una rama / Repositorio nuevo**: `before` se recibe como una cadena de ceros (`0000000000000000000000000000000000000000`). El workflow detecta esta condición y obtiene el historial completo hasta `after` sin generar errores.
+- **Commits no versionados**: Commits de documentación, tareas auxiliares o merges sin etiquetas son ignorados sin detener el proceso ni alterar la versión.
+- **Tags preexistentes**: Si un tag ya existe local o remotamente, se omite su recreación evitando fallos por colisión.
+- **Concurrencia**: Se implementa un grupo de concurrencia (`concurrency: version-bump-${{ github.ref }}`) con `cancel-in-progress: false` para asegurar que múltiples fusiones consecutivas se procesen secuencialmente y sin condiciones de carrera.
+
+---
+
+## 10. Implementación y Mejoras Realizadas
+
+- [x] **Workflow de Versionado**: [`.github/workflows/version-on-merge.yml`](file:///home/patrickortiz/PycharmProjects/Versionamiento/.github/workflows/version-on-merge.yml).
+- [x] **Workflow de Validación Previa (PR Lint)**: [`.github/workflows/pr-lint.yml`](file:///home/patrickortiz/PycharmProjects/Versionamiento/.github/workflows/pr-lint.yml), que valida la sintaxis de los commits en los Pull Requests antes de permitir la fusión.
+- [x] **Archivo de Versión Inicial**: [`VERSION`](file:///home/patrickortiz/PycharmProjects/Versionamiento/VERSION) inicializado en `0.0.0`.
+- [x] **Documentación de Usuario**: [`README.md`](file:///home/patrickortiz/PycharmProjects/Versionamiento/README.md) completo con guía para desarrolladores y ejemplos interactivos.
