@@ -1,0 +1,78 @@
+name: Deploy on Main
+
+on:
+  workflow_run:
+    workflows: ["Version Bump on Merge"]
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Verify, Build and Deploy
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+
+    steps:
+      - name: Download versioned-reference artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: versioned-reference
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .
+
+      - name: Resolve Deploy SHA
+        id: resolve-sha
+        run: |
+          if [ -f final_sha.txt ]; then
+            DEPLOY_SHA=$(tr -d '[:space:]' < final_sha.txt)
+          else
+            DEPLOY_SHA="${{ github.event.workflow_run.head_sha }}"
+          fi
+          echo "Deploying SHA: $DEPLOY_SHA"
+          echo "sha=$DEPLOY_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout versioned commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve-sha.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify Code and Synchronized Versions
+        run: |
+          python3 scripts/versionamiento.py check
+          python3 -m unittest discover -s tests -p 'test_versionamiento.py'
+
+      - name: Log in to Docker Hub
+        if: env.DOCKER_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+
+      - name: Build and Push Docker Images
+        if: env.DOCKER_USERNAME != ''
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "Building Docker images for version: $VERSION"
+          # docker build -t ${{ secrets.DOCKER_USERNAME }}/amazonia-viva:$VERSION .
+          # docker push ${{ secrets.DOCKER_USERNAME }}/amazonia-viva:$VERSION
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+
+      - name: Deploy to VPS
+        if: env.VPS_HOST != ''
+        run: |
+          echo "Desplegando en VPS ${{ secrets.VPS_HOST }}..."
+          # ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "docker pull ... && docker compose up -d"
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
