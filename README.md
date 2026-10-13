@@ -1,6 +1,6 @@
 # Versionamiento Automático por Commits
 
-Versión: **1.0.0**
+Versión: **1.1.0**
 
 Sistema de versionado semántico automatizado mediante **GitHub Actions**. Permite que cada desarrollador declare el impacto de sus cambios en sus mensajes de commit; al fusionarse a la rama principal (`main`), el bot calcula la versión incremental, actualiza el archivo `VERSION`, sincroniza el frontend y README, actualiza `CHANGELOG.md`, genera los commits correspondientes con trailers `Version-Origin` y publica los tags de Git en el orden cronológico exacto en una operación atómica.
 
